@@ -476,7 +476,7 @@ pub fn register_contract_with_snip721(
     })]);
 
     Ok(HandleResponse {
-        messages: vec![],
+        messages,
         log: vec![],
         data: Some(to_binary(&HandleAnswer::RegisterContractWithSnip721 { status: Success })?),
     })
