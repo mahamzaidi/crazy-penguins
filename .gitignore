@@ -2,6 +2,8 @@
 /target
 contract.wasm
 contract.wasm.gz
+Cargo.lock
+rustfmt.toml
 
 # Binaries
 *.wasm
