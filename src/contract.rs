@@ -564,28 +564,6 @@ pub fn batch_receive_nft<S: Storage, A: Api, Q: Querier>(
         save(&mut map2id, &token_key, &id)?;
         save(&mut deps.storage, CONFIG_KEY, &config)?;
 
-        // save the metadata
-        // if let Some(pub_meta) = token.public_metadata {
-        //     enforce_metadata_field_exclusion(&pub_meta)?;
-        //     let mut pub_store = PrefixedStorage::new(PREFIX_PUB_META, &mut deps.storage);
-        //     save(&mut pub_store, &token_key, &pub_meta)?;
-        // }
-        // if let Some(priv_meta) = token.private_metadata {
-        //     enforce_metadata_field_exclusion(&priv_meta)?;
-        //     let mut priv_store = PrefixedStorage::new(PREFIX_PRIV_META, &mut deps.storage);
-        //     save(&mut priv_store, &token_key, &priv_meta)?;
-        // }
-        // // check/save royalty information only if the token is transferable
-        // if _token.transferable {
-        //     let mut roy_store = PrefixedStorage::new(PREFIX_ROYALTY_INFO, &mut deps.storage);
-        //     store_royalties(
-        //         &mut roy_store,
-        //         &deps.api,
-        //         token.royalty_info.as_ref(),
-        //         default_roy.as_ref(),
-        //         &token_key,
-        //     )?;
-        // }
         nft_received.push(id.to_string());
 
     }

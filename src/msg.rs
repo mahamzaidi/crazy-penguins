@@ -99,10 +99,12 @@ pub struct PostInitCallback {
     pub send: Vec<Coin>,
 }
 
+/// info needed to register current contract with another snip721
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
 pub struct CallRegister {
+        /// target's address
         pub bank_address: HumanAddr,
-        /// recipient's code hash
+        /// target's code hash
         pub recipient_code_hash: String,
         /// true if the contract also implements BacthReceiveNft.  Defaults to false
         /// if not specified
