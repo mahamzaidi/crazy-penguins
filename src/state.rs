@@ -21,6 +21,8 @@ pub const BLOCK_KEY: &[u8] = b"blockinfo";
 pub const MINTERS_KEY: &[u8] = b"minters";
 /// storage key for this contract's address
 pub const MY_ADDRESS_KEY: &[u8] = b"myaddr";
+/// storage key for tokens up for sale
+pub const FOR_SALE_KEY: &[u8] = b"forsale";
 /// storage key for prng seed
 pub const PRNG_SEED_KEY: &[u8] = b"prngseed";
 /// storage key for the contract instantiator
@@ -59,7 +61,14 @@ pub const PREFIX_RECEIVERS: &[u8] = b"receivers";
 pub const PREFIX_MINT_RUN_NUM: &[u8] = b"runnum";
 /// prefix for the storage of revoked permits
 pub const PREFIX_REVOKED_PERMITS: &str = "revoke";
+/// prefix for the storage of a token's current sale status
+pub const PREFIX_TOKEN_SALE_INFO: &[u8] = b"tokensaleinfo";
+/// prefix for the storage of all token sales made
+pub const PREFIX_TOKEN_SALE: &[u8] = b"tokensale";
+/// prefix for the storage of nfts received 
 pub const RECEIVED_NFT_KEY: &[u8] = b"received";
+
+
 /// Token contract config
 #[derive(Serialize, Debug, Deserialize, Clone, PartialEq)]
 pub struct Config {

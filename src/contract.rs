@@ -18,13 +18,13 @@ use crate::expiration::Expiration;
 use crate::inventory::{Inventory, InventoryIter};
 use crate::mint_run::{SerialNumber, StoredMintRunInfo};
 use crate::msg::{
-    AccessLevel, BatchNftDossierElement, Burn, ContractStatus, Cw721Approval, Cw721OwnerOfResponse, HandleAnswer, HandleMsg, InitMsg, Mint, QueryAnswer, QueryMsg, QueryWithPermit, ReceiverInfo, ResponseStatus::Success, Send, Snip721Approval, Transfer, ViewerInfo, CallRegister,
+    AccessLevel, BatchNftDossierElement, Burn, ContractStatus, Cw721Approval, Cw721OwnerOfResponse, HandleAnswer, HandleMsg, InitMsg, Mint, QueryAnswer, QueryMsg, QueryWithPermit, ReceiverInfo, ResponseStatus::Success, Send, Snip721Approval, Transfer, ViewerInfo, CallRegister, SaleStatus, TokenSaleInfo,
 };
 use crate::rand::sha_256;
 use crate::receiver::{batch_receive_nft_msg, receive_nft_msg};
 use crate::royalties::{RoyaltyInfo, StoredRoyaltyInfo};
 use crate::state::{
-    get_txs, json_may_load, json_save, load, may_load, remove, save, store_burn, store_mint, store_transfer, AuthList, Config, Permission, PermissionType, ReceiveRegistration, BLOCK_KEY, CONFIG_KEY, CREATOR_KEY, DEFAULT_ROYALTY_KEY, MINTERS_KEY, MY_ADDRESS_KEY, PREFIX_ALL_PERMISSIONS, PREFIX_AUTHLIST, PREFIX_INFOS, PREFIX_MAP_TO_ID, PREFIX_MAP_TO_INDEX, PREFIX_MINT_RUN, PREFIX_MINT_RUN_NUM, PREFIX_OWNER_PRIV, PREFIX_PRIV_META, PREFIX_PUB_META, PREFIX_RECEIVERS, PREFIX_REVOKED_PERMITS, PREFIX_ROYALTY_INFO, PREFIX_VIEW_KEY, PRNG_SEED_KEY, RECEIVED_NFT_KEY,
+    get_txs, json_may_load, json_save, load, may_load, remove, save, store_burn, store_mint, store_transfer, AuthList, Config, Permission, PermissionType, ReceiveRegistration, BLOCK_KEY, CONFIG_KEY, CREATOR_KEY, DEFAULT_ROYALTY_KEY, MINTERS_KEY, MY_ADDRESS_KEY, PREFIX_ALL_PERMISSIONS, PREFIX_AUTHLIST, PREFIX_INFOS, PREFIX_MAP_TO_ID, PREFIX_MAP_TO_INDEX, PREFIX_MINT_RUN, PREFIX_MINT_RUN_NUM, PREFIX_OWNER_PRIV, PREFIX_PRIV_META, PREFIX_PUB_META, PREFIX_RECEIVERS, PREFIX_REVOKED_PERMITS, PREFIX_ROYALTY_INFO, PREFIX_VIEW_KEY, PRNG_SEED_KEY, RECEIVED_NFT_KEY, FOR_SALE_KEY, PREFIX_TOKEN_SALE_INFO,
 };
 use crate::token::{Metadata, Token};
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
@@ -454,10 +454,123 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
             env,
             msg,
         ),
+        HandleMsg::SetSaleStatus {
+            token_id,
+            sale_status,
+            price,
+        } => set_sale_status(
+            deps,
+            env,
+            &mut config,
+            &token_id,
+            sale_status,
+            price,
+        ),
     };
     pad_handle_result(response, BLOCK_SIZE)
 }
 
+// pub fn query_token_sale_info<S: Storage, A: Api, Q: Querier>(
+//     deps: &Extern<S, A, Q>,
+//     token_id: &str,
+//     viewer: Option<ViewerInfo>,
+//     from_permit: Option<CanonicalAddr>,
+// ) -> QueryResult {
+//     let sender_raw = deps.api.canonical_address(&env.message.sender)?;
+
+// }
+
+pub fn sell_token<S: Storage, A: Api, Q: Querier>(
+    deps: &mut Extern<S, A, Q>,
+    env: Env,
+    config: &mut Config,
+    token_id: &str,
+    price: u32,
+) -> HandleResponse {
+    let buyer = deps.api.canonical_address(&env.message.sender)?;
+    
+
+}
+
+pub fn query_tokens_for_sale<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) 
+-> QueryResult {
+    let for_sale: Vec<String> = may_load(&deps.storage, FOR_SALE_KEY)?.unwrap_or_default();
+
+    to_binary(&QueryAnswer::TokensForSale { for_sale })
+}
+
+pub fn set_sale_status<S: Storage, A: Api, Q: Querier>(
+    deps: &mut Extern<S, A, Q>,
+    env: Env,
+    config: &mut Config,
+    token_id: &str,
+    sale_status: SaleStatus,
+    price: u32,
+) -> HandleResult {
+    let sender_raw = deps.api.canonical_address(&env.message.sender)?;
+    let token_price: Option<u32>;
+    // check if token_id exists
+    let mut map2idx = PrefixedStorage::new(PREFIX_MAP_TO_INDEX, &mut deps.storage);
+    let may_exist: Option<u32> = may_load(&map2idx, token_id.as_bytes())?;
+
+    let err_msg = format!(
+        "You are not authorized to perform this action on token {}",
+        token_id
+    );
+    // if token supply is private, don't leak that the token id does not exist
+    // instead just say they are not authorized for that token
+    let opt_err = if config.token_supply_is_public {
+        None
+    } else {
+        Some(&*err_msg)
+    };
+    
+    // if token exists make your checks
+    if may_exist.is_some() {
+        let (token, idx) = get_token(&deps.storage, token_id, opt_err)?;
+        if !token.transferable {
+            return Err(StdError::generic_err(
+                "Non-transferable tokens can not be sold, so setting sale status is meaningless",
+            ));
+        }
+        if !(token.owner == sender_raw){
+            return Err(StdError::generic_err(
+                "Only the owner of the token can change the sale status",
+            ));
+        }
+        
+        if (sale_status == SaleStatus::ForSale){
+            token_price = Some(price);
+
+            let mut for_sale: Vec<String> =
+            may_load(&deps.storage, FOR_SALE_KEY)?.unwrap_or_default();
+            for_sale.push(token_id.to_string());
+
+            save(&mut deps.storage, FOR_SALE_KEY, &for_sale)?;
+
+        } else {
+            token_price = None;
+        }
+
+        let sale = TokenSaleInfo{
+            token_id: token_id.to_string(),
+            sale_status: sale_status.clone(),
+            token_price: token_price,
+        };
+
+        // save token sale information
+        let mut sale_store = PrefixedStorage::new(PREFIX_TOKEN_SALE_INFO, &mut deps.storage);
+        json_save(&mut sale_store, &idx.to_le_bytes(), &sale)?;
+    }
+    
+    Ok(HandleResponse {
+        messages: vec![],
+        log: vec![],
+        data: Some(to_binary(&HandleAnswer::SetSaleStatus {
+            status: Success,
+        })?),
+    })
+}
 
 pub fn register_contract_with_snip721(
     env: Env,
@@ -572,6 +685,7 @@ pub fn batch_receive_nft<S: Storage, A: Api, Q: Querier>(
     for inventory in inventories.iter() {
         inventory.save(&mut deps.storage)?;
     }
+
 
     let received_str = nft_received.pop().unwrap_or_default();
     let m = &received_str;
@@ -1867,6 +1981,7 @@ pub fn query<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>, msg: QueryM
         }
         QueryMsg::ContractConfig {} => query_config(&deps.storage),
         QueryMsg::Minters {} => query_minters(deps),
+        QueryMsg::TokensForSale {} => query_tokens_for_sale(deps),
         QueryMsg::NumTokens { viewer } => query_num_tokens(deps, viewer, None),
         QueryMsg::AllTokens {
             viewer,
