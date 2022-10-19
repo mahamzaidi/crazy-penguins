@@ -116,6 +116,12 @@ pub struct CallRegister {
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HandleMsg {
+    // set token sale status
+    SetSaleStatus {
+        token_id: String,
+        sale_status: SaleStatus,
+        price: u32,
+    },
     /// mint new token
     MintNft {
         /// optional token id. if omitted, use current token index
@@ -602,6 +608,9 @@ pub enum HandleAnswer {
     RegisterContractWithSnip721 {
         status: ResponseStatus,
     },
+    SetSaleStatus {
+        status: ResponseStatus,
+    },
 
 }
 
@@ -613,6 +622,22 @@ pub struct ViewerInfo {
     /// authentication key string
     pub viewing_key: String,
 }
+
+/// a token's current sale information
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct TokenSaleInfo {
+    pub token_id: String,
+    pub sale_status: SaleStatus,
+    pub token_price: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum SaleStatus {
+    ForSale,
+    NotForSale,
+}
+
 
 /// a recipient contract's code hash and whether it implements BatchReceiveNft
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -682,6 +707,7 @@ pub enum QueryMsg {
     Minters {},
     /// display the number of tokens controlled by the contract.  The token supply must
     /// either be public, or the querier must be an authenticated minter
+    TokensForSale {},
     NumTokens {
         /// optional address and key requesting to view the number of tokens
         viewer: Option<ViewerInfo>,
@@ -933,6 +959,9 @@ pub enum QueryAnswer {
     Minters {
         minters: Vec<HumanAddr>,
     },
+    TokensForSale {
+        for_sale: Vec<String>,
+    },
     NumTokens {
         count: u32,
     },
@@ -1030,6 +1059,7 @@ pub enum ResponseStatus {
     Success,
     Failure,
 }
+
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema, Debug)]
 #[serde(rename_all = "snake_case")]
