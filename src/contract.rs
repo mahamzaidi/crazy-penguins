@@ -1,7 +1,10 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 #![allow(warnings, unused)]
+
 use cosmwasm_std::{
-    log, to_binary, Api, Binary, BlockInfo, CanonicalAddr, CosmosMsg, Env, Extern, HandleResponse, HandleResult, HumanAddr, InitResponse, InitResult, Querier, QueryResult, ReadonlyStorage, StdError, StdResult, Storage, WasmMsg, Uint128, Coin,
+    log, to_binary, Api, Binary, BlockInfo, CanonicalAddr, CosmosMsg, Env, Extern, HandleResponse,
+    HandleResult, HumanAddr, InitResponse, InitResult, Querier, QueryResult, ReadonlyStorage,
+    StdError, StdResult, Storage, WasmMsg, BankMsg, Uint128, Coin,
 };
 use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage};
 use primitive_types::U256;
@@ -18,13 +21,13 @@ use crate::expiration::Expiration;
 use crate::inventory::{Inventory, InventoryIter};
 use crate::mint_run::{SerialNumber, StoredMintRunInfo};
 use crate::msg::{
-    AccessLevel, BatchNftDossierElement, Burn, ContractStatus, Cw721Approval, Cw721OwnerOfResponse, HandleAnswer, HandleMsg, InitMsg, Mint, QueryAnswer, QueryMsg, QueryWithPermit, ReceiverInfo, ResponseStatus::Success, Send, Snip721Approval, Transfer, ViewerInfo, CallRegister, SaleStatus, TokenSaleInfo,
+    AccessLevel, BatchNftDossierElement, Burn, ContractStatus, Cw721Approval, Cw721OwnerOfResponse, HandleAnswer, HandleMsg, InitMsg, Mint, QueryAnswer, QueryMsg, QueryWithPermit, ReceiverInfo, ResponseStatus::Success, Send, Snip721Approval, Transfer, ViewerInfo, SaleStatus, TokenSaleInfo,
 };
 use crate::rand::sha_256;
 use crate::receiver::{batch_receive_nft_msg, receive_nft_msg};
 use crate::royalties::{RoyaltyInfo, StoredRoyaltyInfo};
 use crate::state::{
-    get_txs, json_may_load, json_save, load, may_load, remove, save, store_burn, store_mint, store_transfer, AuthList, Config, Permission, PermissionType, ReceiveRegistration, BLOCK_KEY, CONFIG_KEY, CREATOR_KEY, DEFAULT_ROYALTY_KEY, MINTERS_KEY, MY_ADDRESS_KEY, PREFIX_ALL_PERMISSIONS, PREFIX_AUTHLIST, PREFIX_INFOS, PREFIX_MAP_TO_ID, PREFIX_MAP_TO_INDEX, PREFIX_MINT_RUN, PREFIX_MINT_RUN_NUM, PREFIX_OWNER_PRIV, PREFIX_PRIV_META, PREFIX_PUB_META, PREFIX_RECEIVERS, PREFIX_REVOKED_PERMITS, PREFIX_ROYALTY_INFO, PREFIX_VIEW_KEY, PRNG_SEED_KEY, RECEIVED_NFT_KEY, FOR_SALE_KEY, PREFIX_TOKEN_SALE_INFO,
+    get_txs, json_may_load, json_save, json_load, load, may_load, remove, save, store_burn, store_mint, store_transfer, AuthList, Config, Permission, PermissionType, ReceiveRegistration, BLOCK_KEY, CONFIG_KEY, CREATOR_KEY, DEFAULT_ROYALTY_KEY, MINTERS_KEY, MY_ADDRESS_KEY, PREFIX_ALL_PERMISSIONS, PREFIX_AUTHLIST, PREFIX_INFOS, PREFIX_MAP_TO_ID, PREFIX_MAP_TO_INDEX, PREFIX_MINT_RUN, PREFIX_MINT_RUN_NUM, PREFIX_OWNER_PRIV, PREFIX_PRIV_META, PREFIX_PUB_META, PREFIX_RECEIVERS, PREFIX_REVOKED_PERMITS, PREFIX_ROYALTY_INFO, PREFIX_VIEW_KEY, PRNG_SEED_KEY, RECEIVED_NFT_KEY, FOR_SALE_KEY, PREFIX_TOKEN_SALE_INFO,
 };
 use crate::token::{Metadata, Token};
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
@@ -73,8 +76,8 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
         tx_cnt: 0,
         token_cnt: 0,
         status: ContractStatus::Normal.to_u8(),
-        token_supply_is_public: init_config.public_token_supply.unwrap_or(true),
-        owner_is_public: init_config.public_owner.unwrap_or(true),
+        token_supply_is_public: init_config.public_token_supply.unwrap_or(false),
+        owner_is_public: init_config.public_owner.unwrap_or(false),
         sealed_metadata_is_enabled: init_config.enable_sealed_metadata.unwrap_or(false),
         unwrap_to_private: init_config.unwrapped_metadata_is_private.unwrap_or(false),
         minter_may_update_metadata: init_config.minter_may_update_metadata.unwrap_or(true),
@@ -424,19 +427,6 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
             ContractStatus::StopTransactions.to_u8(),
             &minters,
         ),
-        HandleMsg::BatchReceiveNft{
-            sender,
-            from,
-            token_ids,
-            msg,
-        } => batch_receive_nft(
-            deps,
-            env,
-            sender,
-            from,
-            &token_ids,
-            msg,
-        ),
         HandleMsg::ChangeAdmin { address, .. } => change_admin(
             deps,
             env,
@@ -450,10 +440,6 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         HandleMsg::RevokePermit { permit_name, .. } => {
             revoke_permit(&mut deps.storage, &env.message.sender, &permit_name)
         },
-        HandleMsg::RegisterContractWithSnip721{ msg } => register_contract_with_snip721 (
-            env,
-            msg,
-        ),
         HandleMsg::SetSaleStatus {
             token_id,
             sale_status,
@@ -466,37 +452,199 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
             sale_status,
             price,
         ),
+        HandleMsg::SetPrice { token_id, price } => set_price (
+            deps,
+            env,
+            &mut config,
+            &token_id,
+            price,
+        ),
+        HandleMsg::BuyToken { token_id } => buy_token (
+            deps,
+            env,
+            &mut config,
+            &token_id,
+        ),
     };
     pad_handle_result(response, BLOCK_SIZE)
 }
 
-// pub fn query_token_sale_info<S: Storage, A: Api, Q: Querier>(
-//     deps: &Extern<S, A, Q>,
-//     token_id: &str,
-//     viewer: Option<ViewerInfo>,
-//     from_permit: Option<CanonicalAddr>,
-// ) -> QueryResult {
-//     let sender_raw = deps.api.canonical_address(&env.message.sender)?;
 
-// }
+pub fn buy_token<S: Storage, A: Api, Q: Querier>(
+    deps: &mut Extern<S, A, Q>,
+    env: Env,
+    config: &mut Config,
+    token_id: &str,
+) -> HandleResult {
 
-pub fn sell_token<S: Storage, A: Api, Q: Querier>(
+    let buyer = (&env.message.sender).clone();
+    let buyer_raw = deps.api.canonical_address(&env.message.sender)?;
+    let mut seller_raw: CanonicalAddr = CanonicalAddr::default();
+    let mut price_info: Coin = Coin::default();
+    let mut _price: u32 = 0;
+
+    // check if token_id exists
+    let map2idx = PrefixedStorage::new(PREFIX_MAP_TO_INDEX, &mut deps.storage);
+    let may_exist: Option<u32> = may_load(&map2idx, token_id.as_bytes())?;
+
+    let err_msg = format!(
+        "You are not authorized to perform this action on token {}",
+        token_id
+    );
+    // if token supply is private, don't leak that the token id does not exist
+    // instead just say they are not authorized for that token
+    let opt_err = if config.token_supply_is_public {
+        None
+    } else {
+        Some(&*err_msg)
+    };
+    // if token exists make your checks
+    if may_exist.is_some() {
+        let (token, idx) = get_token(&deps.storage, token_id, opt_err)?;
+        // check if token is transferable
+        if !token.transferable {
+            return Err(StdError::generic_err(
+                "Non-transferable tokens can not be sold, so setting sale status is meaningless",
+            ));
+        }
+        // check if token owner is trying to buy the token
+        if token.owner == buyer_raw {
+            seller_raw = token.owner;
+            return Err(StdError::generic_err(
+                "Token owner cannot be the buyer of token",
+            ));
+        }
+        // check if token is up for sale
+        let (stoken, sidx) = get_sale_info(&deps.storage, token_id, opt_err)?;
+        if !(stoken.sale_status == SaleStatus::ForSale){
+            return Err(StdError::generic_err(
+                "Token is not up for sale.",
+            ));
+        } else {
+            _price = stoken.token_price.unwrap();
+        }      
+
+        let token_value: Coin = Coin {
+            denom : "uscrt".to_string(),
+            amount: Uint128(u128::from(_price)),
+        };
+
+        price_info= token_value.clone();
+
+        if env.message.sent_funds.len() != 1 || env.message.sent_funds[0].amount < token_value.amount || env.message.sent_funds[0].denom != String::from("uscrt")
+        {
+            return Err(StdError::generic_err(
+                "Insufficient funds provided.",
+            ));
+        } else {
+        transfer_nft(
+            deps,
+            env,
+            config,
+            ContractStatus::Normal.to_u8(),
+            buyer.clone(),
+            token_id.to_string(),
+            None,
+        )?;
+     }
+
+    }
+
+    Ok(HandleResponse {
+        messages: vec![CosmosMsg::Bank(BankMsg::Send {
+            from_address: buyer,
+            to_address: deps.api.human_address(&seller_raw)?,
+            amount: vec![price_info], // 1mn uscrt = 1 SCRT
+        })],
+        log: vec![],
+        data: Some(to_binary(&HandleAnswer::BuyToken {
+            status: Success
+        })?),
+    })
+}
+
+pub fn set_price<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
     config: &mut Config,
     token_id: &str,
     price: u32,
-) -> HandleResponse {
-    let buyer = deps.api.canonical_address(&env.message.sender)?;
-    
+) -> HandleResult {
+    if price == 0 {
+        return Err(StdError::generic_err(
+            "Invalid input! Price cannot be set to 0.",
+        ));
+    }
+    let sender_raw = deps.api.canonical_address(&env.message.sender)?;
+    // check if token_id exists
+    let map2idx = PrefixedStorage::new(PREFIX_MAP_TO_INDEX, &mut deps.storage);
+    let may_exist: Option<u32> = may_load(&map2idx, token_id.as_bytes())?;
 
+    let err_msg = format!(
+        "You are not authorized to perform this action on token {}",
+        token_id
+    );
+    // if token supply is private, don't leak that the token id does not exist
+    // instead just say they are not authorized for that token
+    let opt_err = if config.token_supply_is_public {
+        None
+    } else {
+        Some(&*err_msg)
+    };
+
+    // if token exists make your checks
+    if may_exist.is_some() {
+        let (token, idx) = get_token(&deps.storage, token_id, opt_err)?;
+        if !(token.owner == sender_raw){
+            return Err(StdError::generic_err(
+                "Only the owner of token can change token price",
+            ));
+        }
+        let (ptoken, pidx) = get_sale_info(&deps.storage, token_id, opt_err)?;
+        let token_key = pidx.to_le_bytes();
+        if !(ptoken.sale_status == SaleStatus::ForSale){
+            return Err(StdError::generic_err(
+                "Token is not up for sale so setting price is meaningless.",
+            ));
+        } else {
+            let mut sale_store = PrefixedStorage::new(PREFIX_TOKEN_SALE_INFO, &mut deps.storage);
+            let mut stored_token: TokenSaleInfo = json_load(&sale_store, &token_key)?;
+            stored_token.token_price = Some(price);
+            json_save(&mut sale_store, &token_key, &stored_token)?;
+        }
+    }
+
+    Ok(HandleResponse {
+        messages: vec![],
+        log: vec![log("price updated", &token_id)],
+        data: Some(to_binary(&HandleAnswer::SetPrice {
+            token_id: token_id.to_string(),
+            token_price: price,
+        })?),
+    })
 }
 
-pub fn query_tokens_for_sale<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) 
--> QueryResult {
-    let for_sale: Vec<String> = may_load(&deps.storage, FOR_SALE_KEY)?.unwrap_or_default();
 
-    to_binary(&QueryAnswer::TokensForSale { for_sale })
+pub fn get_sale_info<S: ReadonlyStorage>(
+    storage: &S,
+    token_id: &str,
+    custom_err: Option<&str>,
+) -> StdResult<(TokenSaleInfo,u32)>{
+    let default_err: String;
+    let not_found = if let Some(err) = custom_err {
+        err
+    } else {
+        default_err = format!("Token ID: {} not found", token_id);
+        &*default_err
+    };
+    let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, storage);
+    let idx: u32 =
+        may_load(&map2idx, token_id.as_bytes())?.ok_or_else(|| StdError::generic_err(not_found))?;
+    let info_store = ReadonlyPrefixedStorage::new(PREFIX_TOKEN_SALE_INFO, storage);
+    let token: TokenSaleInfo = json_may_load(&info_store, &idx.to_le_bytes())?.ok_or_else(|| {
+        StdError::generic_err(format!("Unable to find token sale info for {}", token_id))
+    })?;
+    Ok((token, idx))
 }
 
 pub fn set_sale_status<S: Storage, A: Api, Q: Querier>(
@@ -505,12 +653,12 @@ pub fn set_sale_status<S: Storage, A: Api, Q: Querier>(
     config: &mut Config,
     token_id: &str,
     sale_status: SaleStatus,
-    price: u32,
+    price: Option<u32>,
 ) -> HandleResult {
     let sender_raw = deps.api.canonical_address(&env.message.sender)?;
     let token_price: Option<u32>;
     // check if token_id exists
-    let mut map2idx = PrefixedStorage::new(PREFIX_MAP_TO_INDEX, &mut deps.storage);
+    let map2idx = PrefixedStorage::new(PREFIX_MAP_TO_INDEX, &mut deps.storage);
     let may_exist: Option<u32> = may_load(&map2idx, token_id.as_bytes())?;
 
     let err_msg = format!(
@@ -538,18 +686,22 @@ pub fn set_sale_status<S: Storage, A: Api, Q: Querier>(
                 "Only the owner of the token can change the sale status",
             ));
         }
-        
-        if (sale_status == SaleStatus::ForSale){
-            token_price = Some(price);
-
+        // if the sale status is for sale then TokenSaleInfo struct is populated with all the given arguments.
+        // if the sale status is not for sale then TokenSaleInfo struct only gets populated with token_id and sale_status whereas regardless of price sent, price is set to None.
+        if sale_status == SaleStatus::ForSale{
+            
             let mut for_sale: Vec<String> =
             may_load(&deps.storage, FOR_SALE_KEY)?.unwrap_or_default();
             for_sale.push(token_id.to_string());
 
             save(&mut deps.storage, FOR_SALE_KEY, &for_sale)?;
-
+            if price.is_some(){
+                token_price = Some(price.unwrap());
+            } else {
+                token_price = Some(price.unwrap_or_default());
+            }
         } else {
-            token_price = None;
+            token_price = Some(0);
         }
 
         let sale = TokenSaleInfo{
@@ -565,141 +717,14 @@ pub fn set_sale_status<S: Storage, A: Api, Q: Querier>(
     
     Ok(HandleResponse {
         messages: vec![],
-        log: vec![],
+        log: vec![log("Sale status set", &token_id)],
         data: Some(to_binary(&HandleAnswer::SetSaleStatus {
-            status: Success,
+            token_id: token_id.to_string(),
+            sale_status: sale_status.clone(),
         })?),
     })
 }
 
-pub fn register_contract_with_snip721(
-    env: Env,
-    msg: CallRegister,
-) -> HandleResult {
-    let mut messages: Vec<CosmosMsg> = vec![];
-    messages.extend(vec![CosmosMsg::Wasm(WasmMsg::Execute {
-        contract_addr: msg.bank_address,
-        callback_code_hash: msg.recipient_code_hash,
-        msg: to_binary(&HandleMsg::RegisterReceiveNft {
-            code_hash: env.contract_code_hash,
-            also_implements_batch_receive_nft: Some(true),
-            padding: None,
-        })?,
-        send: vec![],
-    })]);
-
-    Ok(HandleResponse {
-        messages,
-        log: vec![],
-        data: Some(to_binary(&HandleAnswer::RegisterContractWithSnip721 { status: Success })?),
-    })
-}
-
-
-/// Returns a StdResult<CosmosMsg> used to call a registered contract's
-/// BatchReceiveNft
-///
-/// # Arguments
-///
-/// * `sender` - the address that is sending the token
-/// * `from` - the address of the former owner of the sent token
-/// * `token_ids` - list of ID Strings of the tokens that were sent
-/// * `msg` - optional msg used to control ReceiveNft logic
-/// * `callback_code_hash` - String holding the code hash of the contract that was
-///                          sent the token
-/// * `contract_addr` - address of the contract that was sent the token
-pub fn batch_receive_nft<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
-    env: Env,
-    sender: HumanAddr, // address that sent the token
-    from: HumanAddr, // previous owner
-    token_ids: &[String], // list of tokens sent
-    msg: Option<Binary>,
-) -> HandleResult {
-    let mut config: Config = load(&deps.storage, CONFIG_KEY)?;
-    let mut received: Vec<String> = load(&deps.storage, RECEIVED_NFT_KEY)?;
-    // check current contract status
-    if !config.status == ContractStatus::Normal.to_u8(){      
-        return Err(StdError::generic_err("This marketplace is currently not open to transfers!"));
-    }
-    
-    let _owner = &from;
-    let sender_raw = deps.api.canonical_address(&sender);
-    let mut inventories: Vec<Inventory> = Vec::new();
-    let mut nft_received: Vec<String> = Vec::new();
-    let default_roy: Option<StoredRoyaltyInfo> = may_load(&deps.storage, DEFAULT_ROYALTY_KEY)?;
-    let my_address: CanonicalAddr = load(&deps.storage, MY_ADDRESS_KEY)?;
-
-    //traverse the list of sent tokens
-    for token in token_ids.into_iter(){
-        let id = token;
-        // check if id already exists
-        let mut map2idx = PrefixedStorage::new(PREFIX_MAP_TO_INDEX, &mut deps.storage);
-        let may_exist: Option<u32> = may_load(&map2idx, id.as_bytes())?;
-        if may_exist.is_some() {
-            return Err(StdError::generic_err(format!(
-                "Token ID {} is already in use",
-                id
-            )));
-        }
-        // increment token count
-        config.token_cnt = config.token_cnt.checked_add(1).ok_or_else(|| {
-            StdError::generic_err("Attempting to receive more tokens than the implementation limit")
-        })?;
-        // map new token id to its index
-
-        let recipient = my_address.clone();
-        let transferable = true;
-        let _token = Token {
-            owner: recipient.clone(),
-            permissions: Vec::new(),
-            unwrapped: !config.sealed_metadata_is_enabled,
-            transferable,
-        };
-        // save new token info
-        let token_key = config.token_cnt.to_le_bytes();   
-        let mut info_store = PrefixedStorage::new(PREFIX_INFOS, &mut deps.storage);
-        json_save(&mut info_store, &token_key, &_token)?;     
-        // add token to owner's list
-        let inventory = if let Some(inv) = inventories.iter_mut().find(|i| i.owner == _token.owner) {
-            inv
-        } else {
-            let new_inv = Inventory::new(&deps.storage, _token.owner.clone())?;
-            inventories.push(new_inv);
-            inventories.last_mut().ok_or_else(|| {
-                StdError::generic_err("Just pushed an Inventory so this can not happen")
-            })?
-        };        
-        inventory.insert(&mut deps.storage, config.token_cnt, false)?;
-
-        // map index to id
-        let mut map2id = PrefixedStorage::new(PREFIX_MAP_TO_ID, &mut deps.storage);
-        save(&mut map2id, &token_key, &id)?;
-        save(&mut deps.storage, CONFIG_KEY, &config)?;
-
-        nft_received.push(id.to_string());
-
-    }
-   
-    // save all the updated inventories
-    for inventory in inventories.iter() {
-        inventory.save(&mut deps.storage)?;
-    }
-
-
-    let received_str = nft_received.pop().unwrap_or_default();
-    let m = &received_str;
-    received.push(m.to_string());
-    save(&mut deps.storage, RECEIVED_NFT_KEY, &received)?;
-
-    Ok(HandleResponse {
-        messages: vec![],
-        log: vec![log("nft received", &received_str)],
-        data: Some(to_binary(&HandleAnswer::BatchReceiveNft { 
-            token_id: received_str,
-         })?),
-    })
-}
 
 /// Returns HandleResult
 ///
@@ -1608,7 +1633,6 @@ fn send_nft<S: Storage, A: Api, Q: Querier>(
 ) -> HandleResult {
     check_status(config.status, priority)?;
     let sender_raw = deps.api.canonical_address(&env.message.sender)?;
-    
     let sends = Some(vec![Send {
         contract,
         receiver_info,
@@ -1981,7 +2005,6 @@ pub fn query<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>, msg: QueryM
         }
         QueryMsg::ContractConfig {} => query_config(&deps.storage),
         QueryMsg::Minters {} => query_minters(deps),
-        QueryMsg::TokensForSale {} => query_tokens_for_sale(deps),
         QueryMsg::NumTokens { viewer } => query_num_tokens(deps, viewer, None),
         QueryMsg::AllTokens {
             viewer,
